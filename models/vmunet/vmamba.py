@@ -10,13 +10,13 @@ import torch.utils.checkpoint as checkpoint
 from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 try:
-    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
+    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref  #不带v1的是新版本
 except:
     pass
 
 # an alternative for mamba_ssm (in which causal_conv1d is needed)
 try:
-    from selective_scan import selective_scan_fn as selective_scan_fn_v1
+    from selective_scan import selective_scan_fn as selective_scan_fn_v1  #v1是旧版本
     from selective_scan import selective_scan_ref as selective_scan_ref_v1
 except:
     pass
@@ -270,23 +270,34 @@ class SS2D(nn.Module):
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
-        self.d_model = d_model
-        self.d_state = d_state
+        self.d_model = d_model  #输入输出的特征通道数
+        self.d_state = d_state  #状态空间模型里的 hidden state 维度，可以理解为 SSM 内部状态大小。它影响 Mamba/Selective Scan 的表达能力和计算量。默认是16.
         # self.d_state = math.ceil(self.d_model / 6) if d_state == "auto" else d_model # 20240109
         self.d_conv = d_conv
-        self.expand = expand
-        self.d_inner = int(self.expand * self.d_model)
-        self.dt_rank = math.ceil(self.d_model / 16) if dt_rank == "auto" else dt_rank
-
+        self.expand = expand  #通道扩展倍数。SS2D 内部不会直接用 d_model 做计算，而是先扩展到更宽的内部维度。默认是2.
+        self.d_inner = int(self.expand * self.d_model)  #d_inner：SS2D 内部通道数。d_inner = expand * d_model
+        self.dt_rank = math.ceil(self.d_model / 16) if dt_rank == "auto" else dt_rank  #时间步长参数 delta / dt 的低秩投影维度。在 Mamba/SSM 里，每个位置会生成动态的 dt，但不直接从大维度生成，而是先用一个较小的 rank 表示，再投影到 d_inner。如果 dt_rank="auto"，就自动设为：ceil(d_model / 16)
+        '''
+        d_model -> 外部通道
+        d_inner -> Linear 后主分支/门控分支各自的内部通道
+        d_state -> SS2D/SSM 内部状态维度
+        '''
         self.in_proj = nn.Linear(self.d_model, self.d_inner * 2, bias=bias, **factory_kwargs)
+        '''
+        d_model = 96
+        expand = 2
+        则d_inner = 192
+        那么：
+        self.in_proj = nn.Linear(96, 384)
+        '''
         self.conv2d = nn.Conv2d(
             in_channels=self.d_inner,
             out_channels=self.d_inner,
-            groups=self.d_inner,
-            bias=conv_bias,
+            groups=self.d_inner,    #groups = in_channels = out_channels，表示每个通道单独卷积，不和其他通道混合。
+            bias=conv_bias,  #卷积后是否加偏置，默认为True
             kernel_size=d_conv,
-            padding=(d_conv - 1) // 2,
-            **factory_kwargs,
+            padding=(d_conv - 1) // 2,  #保证输入输出的空间尺寸 H, W 不变
+            **factory_kwargs,  #传入一些额外参数，主要是：device=device，dtype=dtype；用于指定这个层放在哪个设备上，以及使用什么数据类型。
         )
         self.act = nn.SiLU()
 
@@ -313,7 +324,7 @@ class SS2D(nn.Module):
         self.Ds = self.D_init(self.d_inner, copies=4, merge=True) # (K=4, D, N)
 
         # self.selective_scan = selective_scan_fn
-        self.forward_core = self.forward_corev0
+        self.forward_core = self.forward_corev0  # corev0用的是selective_scan_fn，是新版本。（见头文件）
 
         self.out_norm = nn.LayerNorm(self.d_inner)
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
@@ -375,7 +386,7 @@ class SS2D(nn.Module):
         D._no_weight_decay = True
         return D
 
-    def forward_corev0(self, x: torch.Tensor):
+    def forward_corev0(self, x: torch.Tensor): #ss2d用的是这个core,不是下面那个corev1,见327行
         self.selective_scan = selective_scan_fn
         
         B, C, H, W = x.shape
@@ -415,7 +426,7 @@ class SS2D(nn.Module):
         return out_y[:, 0], inv_y[:, 0], wh_y, invwh_y
 
     # an alternative to forward_corev1
-    def forward_corev1(self, x: torch.Tensor):
+    def forward_corev1(self, x: torch.Tensor): #在当前代码里没有被使用
         self.selective_scan = selective_scan_fn_v1
 
         B, C, H, W = x.shape

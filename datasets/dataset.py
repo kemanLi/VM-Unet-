@@ -13,12 +13,19 @@ from scipy import ndimage
 from PIL import Image
 
 
+def _list_files(directory):
+    return sorted(
+        f for f in os.listdir(directory)
+        if os.path.isfile(os.path.join(directory, f))
+    )
+
+
 class NPY_datasets(Dataset):
     def __init__(self, path_Data, config, train=True):
         super(NPY_datasets, self)
         if train:
-            images_list = sorted(os.listdir(path_Data+'train/images/'))
-            masks_list = sorted(os.listdir(path_Data+'train/masks/'))
+            images_list = _list_files(path_Data + 'train/images/')
+            masks_list = _list_files(path_Data + 'train/masks/')
             self.data = []
             for i in range(len(images_list)):
                 img_path = path_Data+'train/images/' + images_list[i]
@@ -26,8 +33,8 @@ class NPY_datasets(Dataset):
                 self.data.append([img_path, mask_path])
             self.transformer = config.train_transformer
         else:
-            images_list = sorted(os.listdir(path_Data+'val/images/'))
-            masks_list = sorted(os.listdir(path_Data+'val/masks/'))
+            images_list = _list_files(path_Data + 'val/images/')
+            masks_list = _list_files(path_Data + 'val/masks/')
             self.data = []
             for i in range(len(images_list)):
                 img_path = path_Data+'val/images/' + images_list[i]

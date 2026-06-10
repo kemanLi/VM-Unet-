@@ -19,11 +19,15 @@ class setting_config:
         'load_ckpt_path': './pre_trained_weights/vmamba_small_e238_ema.pth',
     }
 
-    datasets = 'isic18' 
+    datasets = 'DRIVE'  # isic17 | isic18 | DRIVE | STARE
     if datasets == 'isic18':
         data_path = './data/isic2018/'
     elif datasets == 'isic17':
         data_path = './data/isic2017/'
+    elif datasets == 'DRIVE':
+        data_path = './data/DRIVE/'
+    elif datasets == 'STARE':
+        data_path = './data/STARE/'
     else:
         raise Exception('datasets in not right!')
 
@@ -31,8 +35,8 @@ class setting_config:
 
     pretrained_path = './pre_trained/'
     num_classes = 1
-    input_size_h = 256
-    input_size_w = 256
+    input_size_h = 512
+    input_size_w = 512
     input_channels = 3
     distributed = False
     local_rank = -1

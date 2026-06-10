@@ -458,6 +458,10 @@ class myNormalize:
             else:
                 self.mean = 149.8485
                 self.std = 35.3346
+        elif data_name in ('DRIVE', 'STARE'):
+            # 视网膜数据集：后续 __call__ 会做 min-max 归一化到 0-255
+            self.mean = 0
+            self.std = 1
             
     def __call__(self, data):
         img, msk = data
