@@ -1,6 +1,9 @@
-from .vmamba import VSSM
+from pathlib import Path
+
 import torch
 from torch import nn
+
+from .vmamba import VSSM
 
 
 class VMUNet(nn.Module):
@@ -32,46 +35,62 @@ class VMUNet(nn.Module):
         else: return logits
     
     def load_from(self):
-        if self.load_ckpt_path is not None:
-            model_dict = self.vmunet.state_dict()
-            modelCheckpoint = torch.load(self.load_ckpt_path, weights_only=False)
-            pretrained_dict = modelCheckpoint['model']
-            # 过滤操作
-            new_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict.keys()}
-            model_dict.update(new_dict)
-            # 打印出来，更新了多少的参数
-            print('Total model_dict: {}, Total pretrained_dict: {}, update: {}'.format(len(model_dict), len(pretrained_dict), len(new_dict)))
-            self.vmunet.load_state_dict(model_dict)
+        if self.load_ckpt_path is None:
+            return
 
-            not_loaded_keys = [k for k in pretrained_dict.keys() if k not in new_dict.keys()]
-            print('Not loaded keys:', not_loaded_keys)
-            print("encoder loaded finished!")
+        checkpoint_path = Path(self.load_ckpt_path)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"VMamba pre-trained checkpoint not found: {checkpoint_path}"
+            )
 
-            model_dict = self.vmunet.state_dict()
-            modelCheckpoint = torch.load(self.load_ckpt_path, weights_only=False)
-            pretrained_odict = modelCheckpoint['model']
-            pretrained_dict = {}
-            for k, v in pretrained_odict.items():
-                if 'layers.0' in k: 
-                    new_k = k.replace('layers.0', 'layers_up.3')
-                    pretrained_dict[new_k] = v
-                elif 'layers.1' in k: 
-                    new_k = k.replace('layers.1', 'layers_up.2')
-                    pretrained_dict[new_k] = v
-                elif 'layers.2' in k: 
-                    new_k = k.replace('layers.2', 'layers_up.1')
-                    pretrained_dict[new_k] = v
-                elif 'layers.3' in k: 
-                    new_k = k.replace('layers.3', 'layers_up.0')
-                    pretrained_dict[new_k] = v
-            # 过滤操作
-            new_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict.keys()}
-            model_dict.update(new_dict)
-            # 打印出来，更新了多少的参数
-            print('Total model_dict: {}, Total pretrained_dict: {}, update: {}'.format(len(model_dict), len(pretrained_dict), len(new_dict)))
-            self.vmunet.load_state_dict(model_dict)
-            
-            # 找到没有加载的键(keys)
-            not_loaded_keys = [k for k in pretrained_dict.keys() if k not in new_dict.keys()]
-            print('Not loaded keys:', not_loaded_keys)
-            print("decoder loaded finished!")
+        try:
+            checkpoint = torch.load(
+                str(checkpoint_path), map_location="cpu", weights_only=False
+            )
+        except TypeError:
+            # PyTorch 1.13 does not expose the weights_only argument.
+            checkpoint = torch.load(str(checkpoint_path), map_location="cpu")
+        pretrained_encoder = checkpoint.get("model", checkpoint)
+        if not isinstance(pretrained_encoder, dict):
+            raise ValueError(f"Unsupported checkpoint format in {checkpoint_path}")
+
+        model_dict = self.vmunet.state_dict()
+
+        def compatible_weights(weights):
+            return {
+                key: value
+                for key, value in weights.items()
+                if key in model_dict and model_dict[key].shape == value.shape
+            }
+
+        encoder_weights = compatible_weights(pretrained_encoder)
+        if not encoder_weights:
+            raise RuntimeError(
+                f"No compatible VMamba weights were found in {checkpoint_path}"
+            )
+        model_dict.update(encoder_weights)
+
+        decoder_candidates = {}
+        layer_mapping = {
+            "layers.0": "layers_up.3",
+            "layers.1": "layers_up.2",
+            "layers.2": "layers_up.1",
+            "layers.3": "layers_up.0",
+        }
+        for key, value in pretrained_encoder.items():
+            for encoder_name, decoder_name in layer_mapping.items():
+                if encoder_name in key:
+                    decoder_candidates[key.replace(encoder_name, decoder_name)] = value
+                    break
+
+        decoder_weights = compatible_weights(decoder_candidates)
+        model_dict.update(decoder_weights)
+        self.vmunet.load_state_dict(model_dict)
+
+        print(
+            "Loaded VMamba pre-training from {}: encoder {} tensors, "
+            "decoder {} tensors.".format(
+                checkpoint_path, len(encoder_weights), len(decoder_weights)
+            )
+        )

@@ -2,8 +2,35 @@ import numpy as np
 from tqdm import tqdm
 import torch
 from torch.cuda.amp import autocast as autocast
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, roc_auc_score
+from PIL import Image
+from pathlib import Path
 from utils import save_imgs
+
+
+def _unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def _supports_sobel_guidance(model):
+    return bool(
+        getattr(_unwrap_model(model), "supports_sobel_guidance", False)
+    )
+
+
+def _forward_model(
+    model,
+    images,
+    safe_fov_mask=None,
+    guidance_map=None,
+):
+    if not _supports_sobel_guidance(model):
+        return model(images)
+    return model(
+        images,
+        safe_fov_mask=safe_fov_mask,
+        guidance_map=guidance_map,
+    )
 
 
 def train_one_epoch(train_loader,
@@ -25,12 +52,24 @@ def train_one_epoch(train_loader,
     loss_list = []
 
     for iter, data in enumerate(train_loader):
-        step += iter
+        step += 1
         optimizer.zero_grad()
-        images, targets = data
+        safe_fov_mask = None
+        if isinstance(data, dict):
+            images = data["image"]
+            targets = data["mask"]
+            safe_fov_mask = data.get("safe_fov_mask")
+        else:
+            images, targets = data
         images, targets = images.cuda(non_blocking=True).float(), targets.cuda(non_blocking=True).float()
+        if safe_fov_mask is not None:
+            safe_fov_mask = safe_fov_mask.cuda(non_blocking=True).float()
 
-        out = model(images)
+        out = _forward_model(
+            model,
+            images,
+            safe_fov_mask=safe_fov_mask,
+        )
         loss = criterion(out, targets)
 
         loss.backward()
@@ -46,8 +85,189 @@ def train_one_epoch(train_loader,
             log_info = f'train: epoch {epoch}, iter:{iter}, loss: {np.mean(loss_list):.4f}, lr: {now_lr}'
             print(log_info)
             logger.info(log_info)
-    scheduler.step() 
+    if scheduler is not None:
+        scheduler.step()
     return step
+
+
+def _sliding_positions(image_size, patch_size, stride):
+    positions = list(range(0, image_size - patch_size + 1, stride))
+    last_position = image_size - patch_size
+    if positions[-1] != last_position:
+        positions.append(last_position)
+    return positions
+
+
+def sliding_window_predict(
+    image,
+    model,
+    patch_size=192,
+    stride=96,
+    batch_size=32,
+    fov_mask=None,
+):
+    """Predict one normalized CHW image and blend overlapping patch probabilities."""
+    _, height, width = image.shape
+    y_positions = _sliding_positions(height, patch_size, stride)
+    x_positions = _sliding_positions(width, patch_size, stride)
+    coordinates = [(y, x) for y in y_positions for x in x_positions]
+    probability_sum = torch.zeros((1, height, width), device=image.device)
+    count_map = torch.zeros_like(probability_sum)
+
+    full_guidance = None
+    full_safe_fov = None
+    if _supports_sobel_guidance(model):
+        if fov_mask is None:
+            raise ValueError("Sobel-guided sliding-window inference needs an FOV mask")
+        model_core = _unwrap_model(model)
+        full_guidance, full_safe_fov = model_core.prepare_full_guidance(
+            image.unsqueeze(0),
+            fov_mask.unsqueeze(0),
+        )
+        full_guidance = full_guidance[0]
+        full_safe_fov = full_safe_fov[0]
+
+    for start in range(0, len(coordinates), batch_size):
+        batch_coordinates = coordinates[start : start + batch_size]
+        patches = torch.stack(
+            [
+                image[:, y : y + patch_size, x : x + patch_size]
+                for y, x in batch_coordinates
+            ]
+        )
+        guidance_patches = None
+        safe_fov_patches = None
+        if full_guidance is not None:
+            guidance_patches = torch.stack(
+                [
+                    full_guidance[:, y : y + patch_size, x : x + patch_size]
+                    for y, x in batch_coordinates
+                ]
+            )
+            safe_fov_patches = torch.stack(
+                [
+                    full_safe_fov[:, y : y + patch_size, x : x + patch_size]
+                    for y, x in batch_coordinates
+                ]
+            )
+        predictions = _forward_model(
+            model,
+            patches,
+            safe_fov_mask=safe_fov_patches,
+            guidance_map=guidance_patches,
+        )
+        if isinstance(predictions, tuple):
+            predictions = predictions[0]
+        for prediction, (y, x) in zip(predictions, batch_coordinates):
+            probability_sum[:, y : y + patch_size, x : x + patch_size] += prediction
+            count_map[:, y : y + patch_size, x : x + patch_size] += 1
+
+    return (probability_sum / count_map.clamp_min(1)).unsqueeze(0)
+
+
+def _binary_metrics(probabilities, targets, threshold, evaluation_masks=None):
+    probabilities = np.concatenate(probabilities).reshape(-1)
+    targets = np.concatenate(targets).reshape(-1).astype(np.uint8)
+    if evaluation_masks is not None:
+        evaluation_mask = np.concatenate(evaluation_masks).reshape(-1).astype(bool)
+        probabilities = probabilities[evaluation_mask]
+        targets = targets[evaluation_mask]
+    predictions = (probabilities >= threshold).astype(np.uint8)
+    confusion = confusion_matrix(targets, predictions, labels=[0, 1])
+    tn, fp, fn, tp = confusion.ravel()
+    total = tn + fp + fn + tp
+    accuracy = (tn + tp) / total if total else 0.0
+    sensitivity = tp / (tp + fn) if tp + fn else 0.0
+    specificity = tn / (tn + fp) if tn + fp else 0.0
+    dice = 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0
+    miou = tp / (tp + fp + fn) if tp + fp + fn else 0.0
+    auc = roc_auc_score(targets, probabilities) if np.unique(targets).size == 2 else float("nan")
+    return {
+        "accuracy": accuracy,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "dice": dice,
+        "miou": miou,
+        "auc": auc,
+        "confusion_matrix": confusion,
+    }
+
+
+def evaluate_retinal_epoch(
+    data_loader,
+    model,
+    criterion,
+    logger,
+    config,
+    split_name,
+    epoch=None,
+    save_predictions=False,
+):
+    """Sliding-window full-image evaluation for retinal patch training."""
+    model.eval()
+    losses = []
+    probabilities = []
+    targets = []
+    fov_masks = []
+    output_dir = Path(config.work_dir) / "outputs" / split_name
+    if save_predictions:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    with torch.no_grad():
+        for data in tqdm(data_loader):
+            image = data["image"].cuda(non_blocking=True).float()
+            mask = data["mask"].cuda(non_blocking=True).float()
+            fov_mask = data["fov_mask"].cuda(non_blocking=True).float()
+            case_name = data["case_name"][0]
+            full_probability = sliding_window_predict(
+                image=image[0],
+                model=model,
+                patch_size=config.patch_size,
+                stride=config.inference_patch_stride,
+                batch_size=config.inference_batch_size,
+                fov_mask=fov_mask[0],
+            )
+            loss = criterion(full_probability, mask)
+            losses.append(loss.item())
+            probabilities.append(full_probability.squeeze().cpu().numpy()[None])
+            targets.append(mask.squeeze().cpu().numpy()[None])
+            fov_masks.append(fov_mask.squeeze().cpu().numpy()[None])
+
+            if save_predictions:
+                prediction = (
+                    full_probability.squeeze().cpu().numpy() >= config.threshold
+                ).astype(np.uint8)
+                prediction *= fov_mask.squeeze().cpu().numpy().astype(np.uint8)
+                Image.fromarray(prediction * 255).save(
+                    output_dir / f"{case_name}_pred.png"
+                )
+
+    metrics = _binary_metrics(
+        probabilities, targets, config.threshold, evaluation_masks=fov_masks
+    )
+    whole_image_metrics = _binary_metrics(
+        probabilities, targets, config.threshold
+    )
+    metrics["loss"] = float(np.mean(losses))
+    metrics["whole_image"] = whole_image_metrics
+    prefix = split_name if epoch is None else f"{split_name} epoch: {epoch}"
+    log_info = (
+        f"{prefix}, loss (whole image): {metrics['loss']:.4f}; "
+        f"FOV-only miou: {metrics['miou']:.4f}, "
+        f"dice: {metrics['dice']:.4f}, accuracy: {metrics['accuracy']:.4f}, "
+        f"specificity: {metrics['specificity']:.4f}, "
+        f"sensitivity: {metrics['sensitivity']:.4f}, auc: {metrics['auc']:.4f}, "
+        f"confusion_matrix: {metrics['confusion_matrix']}; "
+        f"whole-image miou: {whole_image_metrics['miou']:.4f}, "
+        f"dice: {whole_image_metrics['dice']:.4f}, "
+        f"accuracy: {whole_image_metrics['accuracy']:.4f}, "
+        f"specificity: {whole_image_metrics['specificity']:.4f}, "
+        f"sensitivity: {whole_image_metrics['sensitivity']:.4f}, "
+        f"auc: {whole_image_metrics['auc']:.4f}"
+    )
+    print(log_info)
+    logger.info(log_info)
+    return metrics
 
 
 def val_one_epoch(test_loader,

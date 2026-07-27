@@ -23,6 +23,57 @@ The .whl files of causal_conv1d and mamba_ssm could be found here. {[Baidu](http
 
 ## 1. Prepare the dataset
 
+### DRIVE / STARE patch training
+
+The retinal patch pipeline first splits the original training images, then
+resizes images and masks to 576 x 576. Source validation folders are preserved
+as final test sets, so overlapping patches from one original image cannot leak
+between training and validation.
+
+```bash
+python datasets/prepare_retinal_576.py
+```
+
+The generated layout is:
+
+```text
+data/retinal_576/<DRIVE-or-STARE>/
+  train/{images,masks}
+  val/{images,masks}
+  test/{images,masks}
+  manifest.json
+```
+
+Training builds partially overlapping 192 x 192 patch candidates on a fixed
+9 x 9 grid with stride 48, then samples and augments 4,800 patches online per
+epoch. The complete grid is retained, including peripheral patches; FOV masks
+do not remove training samples.
+One deterministic field-of-view (FOV) mask is generated from each fundus
+image without using its vessel annotation. Retinal validation/test metrics are
+reported both inside the FOV (the primary metrics used for checkpoint
+selection) and over the whole resized image. The paired image/mask
+augmentation includes horizontal and vertical flips,
+90-degree rotations, mild brightness/contrast changes, and gamma adjustment.
+Validation and testing use 192 x 192 sliding windows with stride 96 and average
+overlapping probabilities before computing full-image metrics. Architecture
+ablations use BCE + Dice (1:1), AdamW, random initialization, a fixed learning
+rate of 1e-4, batch size 32, threshold 0.5, and 150 epochs. There is no early
+stopping or learning-rate schedule. VMamba pre-training remains available only
+as an explicitly selected comparison.
+
+```bash
+python train.py --dataset DRIVE --model vmunet \
+  --initialization scratch --run-tag baseline
+python train.py --dataset STARE --model vmunet \
+  --initialization scratch --run-tag baseline
+```
+
+To run the two retinal baselines sequentially on one GPU:
+
+```bash
+nohup bash run_retinal_baselines.sh > baseline_chain.log 2>&1 &
+```
+
 ### ISIC datasets
 - The ISIC17 and ISIC18 datasets, divided into a 7:3 ratio, can be found here {[Baidu](https://pan.baidu.com/s/1Y0YupaH21yDN5uldl7IcZA?pwd=dybm)}. 
 
@@ -59,7 +110,7 @@ The .whl files of causal_conv1d and mamba_ssm could be found here. {[Baidu](http
 
 ## 2. Prepare the pre_trained weights
 
-- The weights of the pre-trained VMamba could be downloaded from [Baidu](https://pan.baidu.com/s/1ci_YvPPEiUT2bIIK5x8Igw?pwd=wnyy) or [GoogleDrive](https://drive.google.com/drive/folders/1ZJjc7sdyd-6KfI7c8R6rDN8bcTz3QkCx?usp=sharing). After that, the pre-trained weights should be stored in './pretrained_weights/'.
+- The weights of the pre-trained VMamba could be downloaded from [Baidu](https://pan.baidu.com/s/1ci_YvPPEiUT2bIIK5x8Igw?pwd=wnyy) or [GoogleDrive](https://drive.google.com/drive/folders/1ZJjc7sdyd-6KfI7c8R6rDN8bcTz3QkCx?usp=sharing). For the retinal configuration, store `vmamba_small_e238_ema.pth` at `./pre_trained_weights/pre_trained_weights/vmamba_small_e238_ema.pth`.
 
 
 
@@ -68,6 +119,31 @@ The .whl files of causal_conv1d and mamba_ssm could be found here. {[Baidu](http
 cd VM-UNet
 python train.py  # Train and test VM-UNet on the ISIC17 or ISIC18 dataset.
 python train_synapse.py  # Train and test VM-UNet on the Synapse dataset.
+```
+
+For retinal ablation experiments, the original model and the high-resolution
+variant share the same data, loss, optimizer, and evaluation pipeline:
+
+```bash
+# Original VM-UNet baseline
+python train.py --dataset DRIVE --model vmunet \
+  --initialization scratch --run-tag baseline
+
+# VM-UNet with the combined F0/F1 high-resolution module
+python train.py --dataset DRIVE --model vmunet_highres \
+  --initialization scratch --run-tag highres
+```
+
+`models/vmunet/vmunet.py` and `models/vmunet/vmamba.py` remain the original
+baseline implementation. The high-resolution model is implemented separately
+in `vmunet_highres.py` and `vmamba_highres.py`.
+
+Architecture ablations default to random initialization. To reproduce a
+separate VMamba-pre-trained run, opt in explicitly:
+
+```bash
+python train.py --dataset DRIVE --model vmunet \
+  --initialization vmamba --run-tag pretrained_baseline
 ```
 
 **NOTE**: If you want to use the trained checkpoint for inference testing only and save the corresponding test images, you can follow these steps:  

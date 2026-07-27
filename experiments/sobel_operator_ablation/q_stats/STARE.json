@@ -1,0 +1,67 @@
+{
+  "dataset": "STARE",
+  "source_split": "train",
+  "unaugmented_full_image_size": 576,
+  "quantile": 0.99,
+  "fov_erosion_radius": 2,
+  "eps": 1e-06,
+  "kernel_normalization": "per-direction L2",
+  "padding": "reflect",
+  "variants": {
+    "s3_d2": {
+      "q": 0.130696639418602,
+      "kernel_size": 3,
+      "directions": [
+        "0",
+        "90"
+      ],
+      "valid_pixel_count": 1939502
+    },
+    "s3_d4": {
+      "q": 0.13399864733219147,
+      "kernel_size": 3,
+      "directions": [
+        "0",
+        "45",
+        "90",
+        "135"
+      ],
+      "valid_pixel_count": 1939502
+    },
+    "s5_d2": {
+      "q": 0.15103460848331451,
+      "kernel_size": 5,
+      "directions": [
+        "0",
+        "90"
+      ],
+      "valid_pixel_count": 1939502
+    },
+    "s5_d4": {
+      "q": 0.13893407583236694,
+      "kernel_size": 5,
+      "directions": [
+        "0",
+        "45",
+        "90",
+        "135"
+      ],
+      "valid_pixel_count": 1939502
+    },
+    "s5_d8": {
+      "q": 0.13152076303958893,
+      "kernel_size": 5,
+      "directions": [
+        "0",
+        "22.5",
+        "45",
+        "67.5",
+        "90",
+        "112.5",
+        "135",
+        "157.5"
+      ],
+      "valid_pixel_count": 1939502
+    }
+  }
+}

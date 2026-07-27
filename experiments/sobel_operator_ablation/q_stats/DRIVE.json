@@ -1,0 +1,67 @@
+{
+  "dataset": "DRIVE",
+  "source_split": "train",
+  "unaugmented_full_image_size": 576,
+  "quantile": 0.99,
+  "fov_erosion_radius": 2,
+  "eps": 1e-06,
+  "kernel_normalization": "per-direction L2",
+  "padding": "reflect",
+  "variants": {
+    "s3_d2": {
+      "q": 0.12969261407852173,
+      "kernel_size": 3,
+      "directions": [
+        "0",
+        "90"
+      ],
+      "valid_pixel_count": 3572450
+    },
+    "s3_d4": {
+      "q": 0.13263359665870667,
+      "kernel_size": 3,
+      "directions": [
+        "0",
+        "45",
+        "90",
+        "135"
+      ],
+      "valid_pixel_count": 3572450
+    },
+    "s5_d2": {
+      "q": 0.14857079088687897,
+      "kernel_size": 5,
+      "directions": [
+        "0",
+        "90"
+      ],
+      "valid_pixel_count": 3572450
+    },
+    "s5_d4": {
+      "q": 0.13675439357757568,
+      "kernel_size": 5,
+      "directions": [
+        "0",
+        "45",
+        "90",
+        "135"
+      ],
+      "valid_pixel_count": 3572450
+    },
+    "s5_d8": {
+      "q": 0.1297336220741272,
+      "kernel_size": 5,
+      "directions": [
+        "0",
+        "22.5",
+        "45",
+        "67.5",
+        "90",
+        "112.5",
+        "135",
+        "157.5"
+      ],
+      "valid_pixel_count": 3572450
+    }
+  }
+}

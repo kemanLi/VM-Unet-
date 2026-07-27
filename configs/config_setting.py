@@ -9,6 +9,11 @@ class setting_config:
     """
 
     network = 'vmunet'
+    initialization = 'scratch'
+    vmamba_checkpoint_path = (
+        './pre_trained_weights/pre_trained_weights/'
+        'vmamba_small_e238_ema.pth'
+    )
     model_config = {
         'num_classes': 1, 
         'input_channels': 3, 
@@ -16,7 +21,29 @@ class setting_config:
         'depths': [2,2,2,2],
         'depths_decoder': [2,2,2,1],
         'drop_path_rate': 0.2,
-        'load_ckpt_path': './pre_trained_weights/vmamba_small_e238_ema.pth',
+        'load_ckpt_path': None,
+    }
+    model_configs = {
+        'vmunet': dict(model_config),
+        'vmunet_highres': dict(
+            model_config,
+            shallow_channels=(24, 48),
+            fusion_depth=2,
+            upsample_mode='bilinear',
+        ),
+        'vmunet_highres_sobel': dict(
+            model_config,
+            shallow_channels=(24, 48),
+            fusion_depth=2,
+            upsample_mode='bilinear',
+            # The experiment runner must inject the dataset/operator q statistic.
+            sobel_operator='s3_d2',
+            sobel_q=None,
+            guidance_strength=1.0,
+            sobel_eps=1e-6,
+            fov_erosion_radius=2,
+            uses_sobel_guidance=True,
+        ),
     }
 
     datasets = 'DRIVE'  # isic17 | isic18 | DRIVE | STARE
@@ -25,9 +52,9 @@ class setting_config:
     elif datasets == 'isic17':
         data_path = './data/isic2017/'
     elif datasets == 'DRIVE':
-        data_path = './data/DRIVE/'
+        data_path = './data/retinal_576/DRIVE/'
     elif datasets == 'STARE':
-        data_path = './data/STARE/'
+        data_path = './data/retinal_576/STARE/'
     else:
         raise Exception('datasets in not right!')
 
@@ -35,8 +62,23 @@ class setting_config:
 
     pretrained_path = './pre_trained/'
     num_classes = 1
-    input_size_h = 512
-    input_size_w = 512
+    retinal_patch_mode = datasets in ('DRIVE', 'STARE')
+    full_image_size = 576
+    patch_size = 192
+    train_patch_stride = 48
+    inference_patch_stride = 96
+    input_size_h = patch_size if retinal_patch_mode else 512
+    input_size_w = patch_size if retinal_patch_mode else 512
+    samples_per_epoch = 4800
+    positive_crop_probability = 0.5
+    # Keep the complete 9x9 training grid. FOV masks are evaluation-only.
+    min_fov_fraction = 0.0
+    horizontal_flip_probability = 0.5
+    vertical_flip_probability = 0.5
+    rotation_probability = 0.5
+    photometric_probability = 0.3
+    gamma_probability = 0.3
+    inference_batch_size = 32
     input_channels = 3
     distributed = False
     local_rank = -1
@@ -47,12 +89,21 @@ class setting_config:
     amp = False
     gpu_id = '0'
     batch_size = 32
-    epochs = 300
+    epochs = 150
+    fixed_learning_rate = True
 
-    work_dir = 'results/' + network + '_' + datasets + '_' + datetime.now().strftime('%A_%d_%B_%Y_%Hh_%Mm_%Ss') + '/'
+    work_dir = (
+        'results/'
+        + network
+        + '_'
+        + datasets
+        + '_'
+        + datetime.now().strftime('%A_%d_%B_%Y_%Hh_%Mm_%Ss')
+        + '/'
+    )
 
     print_interval = 20
-    val_interval = 30
+    val_interval = 1
     save_interval = 100
     threshold = 0.5
     only_test_and_save_figs = False
@@ -92,7 +143,7 @@ class setting_config:
         weight_decay = 0.0001 # default: 0 – weight decay (L2 penalty) 
         amsgrad = False # default: False – whether to use the AMSGrad variant of this algorithm from the paper On the Convergence of Adam and Beyond
     elif opt == 'AdamW':
-        lr = 0.001 # default: 1e-3 – learning rate
+        lr = 0.0001 # fixed learning rate for pretrained VMamba patch training
         betas = (0.9, 0.999) # default: (0.9, 0.999) – coefficients used for computing running averages of gradient and its square
         eps = 1e-8 # default: 1e-8 – term added to the denominator to improve numerical stability
         weight_decay = 1e-2 # default: 1e-2 – weight decay coefficient
@@ -126,7 +177,7 @@ class setting_config:
         dampening = 0 # default: 0 – dampening for momentum
         nesterov = False # default: False – enables Nesterov momentum 
     
-    sch = 'CosineAnnealingLR'
+    sch = None  # fixed_learning_rate=True: no learning-rate scheduler
     if sch == 'StepLR':
         step_size = epochs // 5 # – Period of learning rate decay.
         gamma = 0.5 # – Multiplicative factor of learning rate decay. Default: 0.1

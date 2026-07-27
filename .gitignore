@@ -165,6 +165,9 @@ pre_trained_weights/
 pretrained_weights/
 results/
 pdf_pages_msvm_retina/
+server_bundle/
+tmp/
+.idea/
 *.pth
 *.pt
 *.ckpt
